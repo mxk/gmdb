@@ -1,4 +1,12 @@
 
+gmdb v0.6.1                                                           2011-??-??
+
+  *) Bugfix: SIGINFO not available on Linux.
+     Thanks to Jason Smith.
+
+  *) Selected 2-clause Simplified BSD License for public distribution
+
+
 gmdb v0.6.0                                                           2011-07-20
 
   *) First internal release.
