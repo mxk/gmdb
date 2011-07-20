@@ -1,0 +1,113 @@
+
+Gmail Backup Database
+
+NAME
+	gmdb -- manage local gmail message database
+
+SYNOPSIS
+	gmdb command [options] ...
+	gmdb command -h
+	gmdb -h
+
+DESCRIPTION
+	The gmdb client allows you backup all mail stored in a Gmail or Google Apps
+	account to the local storage. The backup is performed using IMAP4 protocol,
+	with some Gmail-specific extensions, which preserves the structure (labels)
+	of all messages. The user has the option of selecting which messages are
+	backed up by constructing a search query using the same syntax as the web
+	interface search (see 'backup' command help for more information).
+
+	By default, deleted messages are kept in the database for 1 year, but you
+	may change this setting to any other value, including forever (see 'config'
+	command). Messages may be restored either to Gmail servers (to the same or
+	different account) or to any other IMAP4 server. The restoration can be
+	performed for the entire account or for a limited number of messages (see
+	'restore' command).
+
+	The client relies heavily on the 'X-GM-EXT1' IMAP4 extensions, which are
+	available on Gmail IMAP4 servers. As a result, the client is currently not
+	able to back up mail from any other IMAP4 server, but this functionality may
+	be added in a future release. Contacts, calendar entries, and chat logs are
+	also not currently saved.
+
+CONFIGURATION FILE
+	An optional configuration file may be used to customize program behavior.
+	The configuration file is required when authenticating to a Google Apps
+	domain using OAuth (see next section). The default search path is:
+
+	  (All)     ./gmdb.conf
+	  (Windows) %USERPROFILE%\gmdb.conf
+	  (Unix)    %HOME/.gmdb
+	  (Unix)    PREFIX/etc/gmdb.conf  (where PREFIX is Python's sys.prefix)
+	  (Unix)    /etc/gmdb.conf
+
+	The exact path may also be specified using the --conf (-c) option. The
+	configuration file uses standard Python syntax. The default settings are
+	listed in _gmdb/conf.py. Here is an example configuration:
+
+	  ROOT_DIR     = '/backup/gmail'             # Where backups are stored
+	  OAUTH_KEY    = 'example.org'               # Google Apps domain name
+	  OAUTH_SECRET = 'kmEgIBJL8ox3AKtTSL4TYzQU'  # OAuth consumer secret
+
+AUTHENTICATION
+	IMAP authentication may be performed using either plaintext password or
+	2-legged OAuth mechanisms. The latter is intended for use with Google Apps
+	domains and provides a way for administrators to back up all domain accounts
+	without requiring individual user passwords.
+
+	The plaintext password authentication should be used for individual Gmail
+	accounts. Gmail requires SSL when connecting to their servers, so your
+	password is encrypted before being sent over the wire. Even so, you should
+	enable "2-step verification" for your account and use an application-
+	specific password to avoid storing the real password in a file on your
+	computer. See the following link for more information:
+
+	  http://www.google.com/support/accounts/bin/static.py?page=guide.cs&
+	  guide=1056283
+
+	The preferred way to specify a password is through the --passwd-file (-P)
+	option, which will read the password from a file, the standard input, or the
+	current terminal (depending on what is connected to stdin). This is slightly
+	more secure than specifying the password on the command line with the -p
+	option, which is visible in the process list and is saved to your command
+	history. You may also opt to enter the password manually for each
+	backup/restore operation, which is the most secure, but slightly
+	inconvenient method.
+
+EXIT STATUS
+	The program exists with a status of 0 on success, 1 on error, and 2 on an
+	error in command line arguments.
+
+STANDARDS
+	Below is a list of informational URLs that are relevant to the client
+	implementation. A more detailed list of IMAP-specific RFCs is at the top of
+	_gmdb\imaplib2.py.
+
+	* http://tools.ietf.org/html/rfc3501 - IMAP VERSION 4rev1
+	* http://tools.ietf.org/html/rfc5849 - The OAuth 1.0 Protocol
+	* http://code.google.com/apis/accounts/docs/OAuth.html - OAuth for Web Apps
+	* http://code.google.com/apis/gmail/oauth/protocol.html - Gmail IMAP OAuth
+	* http://code.google.com/apis/gmail/imap/ - Gmail IMAP Extensions
+
+BUGS
+	The 'muted' message status is not backed up. As far as I can tell, there is
+	no way to retrieve it from the server.
+
+	Creating a label called '\Important' and adding messages to it (which is
+	not the same as marking messages 'important'), will cause those messages to
+	be restored as 'important' rather than be labeled '\Important' (confused
+	yet?). In other words, Gmail adds a special flag to each message when you
+	mark it as important via the web interface. However, it doesn't prevent you
+	from creating a label by the same name as the flag, which happens to be
+	'\Important'. During a restore operation, the server can't tell whether
+	'\Important' refers to the flag or a separate label, so it assumes the
+	former.
+
+	Running the source distribution on Windows requires an updated SQLite DLL
+	in order for the 'index' command to work. The default DLL distributed with
+	Python 3.2 does not have the FTS module compiled in. The solution is to
+	download sqlite3.dll from the official SQLite website and replace the DLL
+	stored in your Python32\DLLs directory.
+
+AUTHOR
+	Maxim Khitrov <max@mxcrypt.com>

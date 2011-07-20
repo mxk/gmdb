@@ -1,0 +1,7 @@
+#!/usr/bin/env python3.2
+#
+# Written by Maxim Khitrov (July 2011)
+#
+
+import _gmdb
+_gmdb.main_wrapper()
