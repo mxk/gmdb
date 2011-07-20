@@ -63,21 +63,26 @@ class SigHandler:
 
 	def __enter__(self):
 		"""Register signal handlers."""
-		sig = {signal.SIGINT: self._abort}
-		if os.name != 'nt':
-			sig[signal.SIGHUP]  = self._abort
-			sig[signal.SIGTERM] = self._abort
-			sig[signal.SIGINFO] = self._status
-			sig[signal.SIGUSR1] = signal.SIG_IGN
-			sig[signal.SIGUSR2] = signal.SIG_IGN
-		self.old_sig = dict((s, signal.signal(s, h)) for s, h in sig.items())
+		sig = {
+			'SIGINT':  self._abort,
+			'SIGHUP':  self._abort,
+			'SIGTERM': self._abort,
+			'SIGINFO': self._status,
+			'SIGUSR1': signal.SIG_IGN,
+			'SIGUSR2': signal.SIG_IGN
+		}
+		self.old_sig = {}
+		for name, handler in sig.items():
+			signum = getattr(signal, name, None)
+			if signum is not None:
+				self.old_sig[signum] = signal.signal(signum, handler)
 		return self
 
 	def __exit__(self, exc_type, exc_val, exc_tb):
 		"""Restore original signal handlers."""
 		try:
-			for s, h in self.old_sig.items():
-				signal.signal(s, h)
+			for signum, handler in self.old_sig.items():
+				signal.signal(signum, handler)
 		finally:
 			self.old_sig = None
 			self.status  = lambda: None
