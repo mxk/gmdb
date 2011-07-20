@@ -109,5 +109,17 @@ BUGS
 	download sqlite3.dll from the official SQLite website and replace the DLL
 	stored in your Python32\DLLs directory.
 
+	(Inconvenience) The restore operation is significantly slower than backup.
+	This due to the design of IMAP4 protocol. During backup, the client can scan
+	the attributes of 1000 messages (using the default configuration) and
+	download all new messages in that range with just two commands. Restore, on
+	the other hand requires three command round-trips for each message. A number
+	of extensions have been developed to improve message upload performance
+	(RFC-2088 and RFC-3502), but Gmail servers do not support them.
+
+	Pressing <Ctrl-C> at the 'Password: ' prompt does not cause the program to
+	exit immediately; you still need to press <Enter>. This a bug in Python 3.2,
+	see issue #11236.
+
 AUTHOR
 	Maxim Khitrov <max@mxcrypt.com>
