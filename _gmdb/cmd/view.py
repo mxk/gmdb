@@ -17,8 +17,15 @@ class view(Command):
 	"""
 
 	def __call__(self):
-		ids = load_ids(conf.ids)
+		if conf.ids:
+			ids = load_ids(conf.ids)
 		with DBControl(conf.db) as db:
+			if conf.digest:
+				body = db.files.read(conf.digest)
+				if body is None:
+					sys.exit('No such message')
+				print(body.decode('ascii', 'replace'))
+				return 0
 			for id in ids:
 				print('\n{:~^80}\n'.format('  {}  '.format(id)))
 				print(db.get_body(id).decode('ascii', 'replace'))
@@ -26,7 +33,12 @@ class view(Command):
 
 	@staticmethod
 	def build_args(subp):
+		mexg = subp.add_mutually_exclusive_group(required=True)
+		mexg.add_argument('-d', dest='digest',
+			help='message digest to view')
 		subp.add_argument('db',
 			help='database directory (will be created if it does not exist)')
-		subp.add_argument('ids', metavar='FILE', type=argparse.FileType(),
+		mexg.add_argument('ids', nargs='?', type=argparse.FileType(),
 			help='file with message ids to view')
+
+# abf15def01cb6330754d4c659e0056e3f94d58ca

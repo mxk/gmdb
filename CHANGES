@@ -1,8 +1,18 @@
 
 gmdb v0.6.1                                                           2011-??-??
 
+  *) Feature: the view command now accepts a '-d <digest>' flag to view
+     individual messages by digest.
+
+  *) Bugfix: message parsing failed when the Content-Type header wasn't
+     separated by a CRLF from Content-Transfer-Encoding.
+
+  *) Bugfix: message parsing failed if some of the headers contained unknown
+     8-bit characters.
+     Reported by Jason Smith.
+
   *) Bugfix: SIGINFO not available on Linux.
-     Thanks to Jason Smith.
+     Reported by Jason Smith.
 
   *) Selected 2-clause Simplified BSD License for public distribution
 

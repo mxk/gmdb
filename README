@@ -121,5 +121,12 @@ BUGS
 	exit immediately; you still need to press <Enter>. This a bug in Python 3.2,
 	see issue #11236.
 
+	The indexing operation may fail to parse some "unusual" (read: malformed)
+	messages. If you encounter "Failed to parse message" errors, please send me
+	the output of the following command (assuming that the message does not
+	contain any sensitive information):
+
+	  $ gmdb view -d <digest> <account>
+
 AUTHOR
 	Maxim Khitrov <max@mxcrypt.com>
