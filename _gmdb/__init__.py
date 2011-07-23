@@ -117,7 +117,7 @@ def parse_args(args):
 	common = argparse.ArgumentParser(add_help=False)
 	common.add_argument('-c', '--conf', metavar='FILE',
 		type=argparse.FileType(), help='configuration file path')
-	common.add_argument('-v', '--verbose', action='count', default=0,
+	common.add_argument('-v', dest='verbose', action='count', default=0,
 		help='enable verbose output (may be repeated up to 5 times)')
 
 	# IMAP options
