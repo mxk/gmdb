@@ -26,8 +26,8 @@ if sqlite3.sqlite_version_info < (3, 6, 19):
 
 __author__  = 'Maxim Khitrov'
 __email__   = 'max@mxcrypt.com'
-__version__ = '0.6.0'
-__date__    = '2011-07-20'
+__version__ = '0.7.0'
+__date__    = '2011-07-25'
 
 #
 ###  I/O encoding  #############################################################

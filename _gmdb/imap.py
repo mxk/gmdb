@@ -111,7 +111,8 @@ class IMAP4Control:
 				log.warn('Mailbox {!a} does not exist, creating...', mbox)
 				self.cn.create(mbox).defer()
 				self.cn.select(mbox).defer()
-			raise
+			else:
+				raise
 		self.cn.check().defer()
 		self._update_mbox()
 		return self.mbox['exists']
@@ -270,7 +271,7 @@ class IMAP4Control:
 	def _update_mbox(self):
 		"""Process all responses in the common queue."""
 		for resp in map(self.cn.claim, self.cn.queued):
-			dtype = resp.dtype.lower()
+			dtype = resp.dtype.lower() if resp.dtype else None
 			if dtype == 'alert':
 				log.critical(resp.info)
 			elif dtype == 'expunge':

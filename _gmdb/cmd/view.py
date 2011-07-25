@@ -40,5 +40,3 @@ class view(Command):
 			help='database directory (will be created if it does not exist)')
 		mexg.add_argument('ids', nargs='?', type=argparse.FileType(),
 			help='file with message ids to view')
-
-# abf15def01cb6330754d4c659e0056e3f94d58ca

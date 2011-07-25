@@ -93,6 +93,9 @@ BUGS
 	The 'muted' message status is not backed up. As far as I can tell, there is
 	no way to retrieve it from the server.
 
+	The 'starred' attribute is not converted to 'flagged' when restoring
+	messages to Microsoft Exchange server.
+
 	Creating a label called '\Important' and adding messages to it (which is
 	not the same as marking messages 'important'), will cause those messages to
 	be restored as 'important' rather than be labeled '\Important' (confused

@@ -81,7 +81,7 @@ class shell(Command):
 		while cn.state != 'logout':
 			try:
 				# Read command
-				_line  = input(sys.ps1)
+				_line  = input(sys.ps1).rstrip()
 				_ret   = None
 				_kbint = False
 				if not _line:

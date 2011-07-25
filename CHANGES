@@ -1,8 +1,23 @@
 
-gmdb v0.6.1                                                           2011-??-??
+gmdb v0.7.0                                                           2011-07-25
 
-  *) Feature: the view command now accepts a '-d <digest>' flag to view
-     individual messages by digest.
+  *) Feature: new 'archive' command for creating a single compressed file
+     containing all messages in the database.
+
+  *) Feature: the 'view' command now accepts a '-d <digest>' flag to view
+     individual message content.
+
+  *) Bugfix: an exception was raised after a new mailbox was successfully
+     created during a restore operation to non-Gmail server.
+
+  *) Bugfix: common IMAP queue processing could raise an exception if one of the
+     responses did not contain any data.
+
+  *) Bugfix: the 'shell' command raised an exception when the <Enter> key was
+     pressed at an empty prompt.
+
+  *) Bugfix: imaplib2 no longer calls shutdown on a closed socket after SSL
+     certificate verification failure.
 
   *) Bugfix: message parsing failed when the Content-Type header wasn't
      separated by a CRLF from Content-Transfer-Encoding.

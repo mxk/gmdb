@@ -105,7 +105,7 @@ class SigHandler:
 		if status:
 			status.show()
 
-from . import backup, config, index, labels, restore, search, view
+from . import archive, backup, config, index, labels, restore, search, view
 
 if True:
 	from . import shell, xyzzy

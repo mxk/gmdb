@@ -75,7 +75,7 @@ import zlib
 try:
 	import ssl
 except ImportError:
-	ssl = False
+	ssl = None
 
 #
 ###  Utility functions  ########################################################
@@ -111,12 +111,14 @@ def qstr_iutf7(s):
 	"""Return a quoted string, encoding any non-ASCII characters as UTF-7."""
 	return qstr(iutf7_encode(s))
 
-def ssl_context(verify_mode=None, cafile=None, capath=None):
+def ssl_context(verify_mode=None, cafile=None, capath=None, default=True):
 	"""Create new SSL context."""
 	if not ssl:
 		raise RuntimeError('ssl support is disabled')
 	ctx = ssl.SSLContext(ssl.PROTOCOL_TLSv1)
 	ctx.set_ciphers('HIGH:!aNULL:@STRENGTH')
+	if default:
+		ctx.set_default_verify_paths()
 	if verify_mode is None:
 		_debug2('SSL certificate verification disabled')
 		ctx.verify_mode = ssl.CERT_NONE
@@ -128,7 +130,8 @@ def ssl_context(verify_mode=None, cafile=None, capath=None):
 		if verify_mode == ssl.CERT_OPTIONAL:
 			_debug2('SSL certificate hostname verification disabled')
 		ctx.verify_mode = verify_mode
-		ctx.load_verify_locations(cafile, capath)
+		if cafile or capath or not default:
+			ctx.load_verify_locations(cafile, capath)
 	return ctx
 
 def group(seq, n=2):
@@ -2159,6 +2162,8 @@ class IMAP4Socket:
 
 	def _shutdown(self, sock):
 		"""Shutdown and close the socket."""
+		if sock.fileno() < 0:
+			return
 		try:
 			sock.shutdown(socket.SHUT_RDWR)
 		except socket.error as exc:
@@ -2228,7 +2233,7 @@ class SocketIO(io.RawIOBase):
 				raise
 
 	def write(self, b):
-		# Socket may NOT be in non-blocking mode; EINTR is handled by sendall()
+		# Socket must NOT be in non-blocking mode; EINTR is handled by sendall()
 		n = len(b)
 		if self.deflate:
 			d = self.deflate.compress(b)
