@@ -556,12 +556,15 @@ class IMAP4:
 		received (if it contained any literals) and an IMAP4Response instance is
 		returned.
 		"""
-		if self._sock.peekline() is not None:
-			return next(self, None)
-		if self._sock.eof:
+		try:
+			if self._sock.peekline() is None:
+				if self._sock.eof:
+					raise IMAP4Error('connection is closed')
+				return None
+		except Exception:
 			self._close()
-			raise IMAP4Error('connection is closed')
-		return None
+			raise
+		return next(self, None)
 
 	def block(self, timeout=None):
 		"""Block execution until a complete server response is available.
@@ -2032,7 +2035,8 @@ class IMAP4Socket:
 		try:
 			text = self._istream.readline(self._bufsize)
 		finally:
-			self._sock.settimeout(self._timeout)
+			if self._sock.fileno() >= 0:
+				self._sock.settimeout(self._timeout)
 
 		# Append new data to the line buffer
 		if text:
