@@ -330,12 +330,13 @@ class UIDValidityError(ProtocolError):
 class StatusError(IMAP4Error):
 	"""Parent class of OK, NO, BAD, and BYE exceptions."""
 
-	def __init__(self, msg, reason=None, resp=None):
+	def __init__(self, msg, reason=None, resp=None, cmd=None):
 		if reason is None:
 			super().__init__(msg)
 		else:
 			super().__init__(msg, reason)
 		self.resp = resp
+		self.cmd  = cmd
 
 class OK(StatusError):
 	"""Command completed with an 'OK' response.
@@ -362,7 +363,7 @@ class BYE(StatusError):
 _all_states = {'!auth', 'auth', 'selected', 'logout'}
 
 # Literal data types
-_lit_types = (bytes, bytearray)
+_lit_types = (bytes, bytearray, memoryview)
 
 class IMAP4:
 	"""IMAP4rev1 [RFC-3501] implementation."""
@@ -494,7 +495,7 @@ class IMAP4:
 			raise
 
 		exc = NO if resp.status == 'NO' else BAD
-		raise exc('server refused literal data', resp.info, resp)
+		raise exc('server refused literal data', resp.info, resp, cmd)
 
 	def __iter__(self):
 		"""Server response iterator."""
@@ -1468,7 +1469,7 @@ class IMAP4Command(metaclass=IMAP4CommandType):
 		rs = self.result.status
 		if (not expect and rs != 'OK') or (expect and rs not in expect):
 			exc = NO if rs == 'NO' else BAD if rs == 'BAD' else OK
-			raise exc(self.result.info, resp=self.result)
+			raise exc(self.result.info, resp=self.result, cmd=self)
 
 	def defer(self, queue=None):
 		"""Send queued responses to another queue.

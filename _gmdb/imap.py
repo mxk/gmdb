@@ -103,9 +103,10 @@ class IMAP4Control:
 
 	def select(self, mbox='INBOX', readonly=True):
 		"""Select one of the mailboxes."""
-		self._reset_mbox(mbox)
+		self._reset_mbox()
 		try:
 			self.cn.select(mbox, readonly).defer()
+			self.mbox['name'] = mbox
 		except NO as exc:
 			if not readonly and self.srv_type != 'gmail':
 				log.warn('Mailbox {!a} does not exist, creating...', mbox)
@@ -255,10 +256,10 @@ class IMAP4Control:
 				         bytes_fmt(limit), usage / limit)
 		return cn
 
-	def _reset_mbox(self, name=''):
+	def _reset_mbox(self):
 		"""Reset mailbox information."""
 		self.mbox = {
-			'name':           name,
+			'name':           '',
 			'flags':          (),
 			'exists':         0,
 			'recent':         0,
