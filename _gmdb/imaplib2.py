@@ -13,6 +13,7 @@ Implemented RFCs:
 * http://tools.ietf.org/html/rfc2152 - UTF-7
 * http://tools.ietf.org/html/rfc2177 - IMAP4 IDLE command
 * http://tools.ietf.org/html/rfc2193 - IMAP4 Mailbox Referrals
+* http://tools.ietf.org/html/rfc2195 - IMAP/POP AUTHorize Extension
 * http://tools.ietf.org/html/rfc2342 - IMAP4 Namespace
 * http://tools.ietf.org/html/rfc2971 - IMAP4 ID extension
 * http://tools.ietf.org/html/rfc3501 - IMAP VERSION 4rev1
@@ -37,6 +38,7 @@ Informational RFCs:
 
 TODO:
 
+* http://tools.ietf.org/html/rfc1731 - IMAP4 Authentication Mechanisms
 * http://tools.ietf.org/html/rfc4469 - IMAP CATENATE Extension
 * http://tools.ietf.org/html/rfc5258 - IMAP4 LIST Command Extensions
 * http://tools.ietf.org/html/rfc5267 - IMAP CONTEXT
@@ -54,7 +56,7 @@ __all__ = [
 	'response_map', 'idate2unix', 'unix2idate', 'iutf7_decode', 'iutf7_encode',
 	'debug_level', 'debug_func', 'IMAP4Error', 'ProtocolError', 'ParseError',
 	'AccessModeError', 'UIDValidityError', 'StatusError', 'OK', 'NO', 'BAD',
-	'BYE', 'IMAP4', 'IMAP4Command', 'IMAP4Response', 'IMAP4SeqSet'
+	'BYE', 'IMAP4', 'IMAP4Command', 'IMAP4Response', 'IMAP4SeqSet', 'IMAP4Test'
 ]
 
 from base64 import b64decode, b64encode
@@ -63,12 +65,14 @@ from select import select
 
 import calendar
 import errno
+import hmac
 import io
 import itertools
 import random
 import re
 import socket
 import sys
+import threading
 import time
 import zlib
 
@@ -330,13 +334,13 @@ class UIDValidityError(ProtocolError):
 class StatusError(IMAP4Error):
 	"""Parent class of OK, NO, BAD, and BYE exceptions."""
 
-	def __init__(self, msg, reason=None, resp=None, cmd=None):
+	def __init__(self, msg, reason=None, response=None, command=None):
 		if reason is None:
 			super().__init__(msg)
 		else:
 			super().__init__(msg, reason)
-		self.resp = resp
-		self.cmd  = cmd
+		self.response = response
+		self.command  = command
 
 class OK(StatusError):
 	"""Command completed with an 'OK' response.
@@ -364,6 +368,39 @@ _all_states = {'!auth', 'auth', 'selected', 'logout'}
 
 # Literal data types
 _lit_types = (bytes, bytearray, memoryview)
+
+def _readline(file, tags=None):
+	"""Read a complete protocol line (text + literals) from file.
+
+	The file object must support a readline method, which returns a decoded
+	string with the trailing '\r\n' sequence removed, and a read method, which
+	returns a bytes object of the specified length.
+
+	The return value is a tuple containing a complete line of text and an
+	optional list of undecoded literals. All octet counts in the original line
+	are replaced with indices into the list of literals. For example:
+
+	('* OK Gimap ready for requests', None)
+	('* 1 FETCH (BODY[HEADER] {0} BODY[] {1})', [b'header', b'body'])
+	"""
+	line = file.readline()
+	if tags and not line.startswith(tags):
+		raise ProtocolError('invalid response tag', line)
+	if line[-1] != '}':
+		return (line, None)  # No literals
+	text = []
+	data = []
+	while True:
+		line, nbytes = line.rsplit('{', 1)
+		text.extend((line, '{', str(len(data)), '}'))   # Index into data
+		data.append(file.read(int(nbytes[:-1])))        # Literal
+		line = file.readline()
+		if not line:
+			break  # Last literal was at the end of the line
+		if line[-1] != '}':
+			text.append(line)
+			break  # Last literal was in the middle of the line
+	return (''.join(text), data)
 
 class IMAP4:
 	"""IMAP4rev1 [RFC-3501] implementation."""
@@ -412,7 +449,7 @@ class IMAP4:
 		_debug1('New IMAP4 connection [tag={}]', self._tag_name)
 
 		# Valid response tag prefixes for this connection
-		self._resp_tags = ('* ', '+ ', self._tag_name)
+		self._rsp_tags = ('* ', '+ ', self._tag_name)
 
 		# Connect
 		try:
@@ -475,14 +512,14 @@ class IMAP4:
 				if wait:
 					# Wait for a continuation request
 					self._sock.flush()
-					resp = self._wait(cmd, True)
-					if resp.type != 'continue':
+					rsp = self._wait(cmd, True)
+					if rsp.type != 'continue':
 						break
 				else:
 					# Poll for server interrupt when using LITERAL+
 					while self.poll():
 						if cmd.result:
-							resp = cmd.result
+							rsp = cmd.result
 							break
 				self._sock.write(data)
 				self._sock.writeline(text, False)
@@ -494,8 +531,8 @@ class IMAP4:
 			self.cmds.pop(tag, None)  # Break circular reference on error
 			raise
 
-		exc = NO if resp.status == 'NO' else BAD
-		raise exc('server refused literal data', resp.info, resp, cmd)
+		exc = NO if rsp.status == 'NO' else BAD
+		raise exc('server refused literal data', rsp.info, rsp, cmd)
 
 	def __iter__(self):
 		"""Server response iterator."""
@@ -514,7 +551,7 @@ class IMAP4:
 		"""
 		while self._sock and not self._sock.eof:
 			try:
-				text, data = self._read_response()
+				text, data = _readline(self._sock, self._rsp_tags)
 			except Exception:
 				# The most likely exception here is socket.timeout, but any
 				# exception raised while reading from the socket may have caused
@@ -523,29 +560,29 @@ class IMAP4:
 				self._close()
 				raise
 
-			resp = IMAP4Response(text, data)
-			if resp.type == 'continue':
-				return resp
-			if resp.dtype == 'CAPABILITY':
-				self._update_caps(resp)
-			if resp.status:
-				if resp.type == 'done':
+			rsp = IMAP4Response(text, data)
+			if rsp.type == 'continue':
+				return rsp
+			if rsp.dtype == 'CAPABILITY':
+				self._update_caps(rsp)
+			if rsp.status:
+				if rsp.type == 'done':
 					try:
-						self._check_status(resp)
-						return resp
+						self._check_status(rsp)
+						return rsp
 					finally:
-						self._done(resp)
-				self._check_status(resp)
+						self._done(rsp)
+				self._check_status(rsp)
 
 			# Try to find the 'status' or 'data' response owner
 			for cmd in self.cmds.values():
-				if cmd._is_data(resp):
-					cmd.queue.append(resp)
-					return resp
+				if cmd._is_data(rsp):
+					cmd.queue.append(rsp)
+					return rsp
 
 			# Add unclaimed responses to the common queue
-			self.queue[resp.seq] = resp
-			return resp
+			self.queue[rsp.seq] = rsp
+			return rsp
 		raise StopIteration
 
 	def poll(self):
@@ -575,24 +612,24 @@ class IMAP4:
 		up to the caller to check the exact amount of time that was spent
 		waiting.
 		"""
-		resp = self.poll()
-		while not resp:
+		rsp = self.poll()
+		while not rsp:
 			if self._sock.block(timeout):
-				resp = self.poll()
+				rsp = self.poll()
 			if timeout is not None:
 				break
-		return resp
+		return rsp
 
-	def claim(self, resp):
+	def claim(self, rsp):
 		"""Claim a response from the common queue."""
-		return self.queue.pop(resp.seq, resp)
+		return self.queue.pop(rsp.seq, rsp)
 
-	def defer(self, resp):
+	def defer(self, rsp):
 		"""Return response to the common queue."""
 		queue   = self.queue
-		new_seq = resp.seq
+		new_seq = rsp.seq
 		max_seq = next(reversed(queue), new_seq)
-		queue[new_seq] = resp
+		queue[new_seq] = rsp
 
 		# Preserve response order
 		if new_seq < max_seq:
@@ -705,14 +742,14 @@ class IMAP4:
 		cmd = self('AUTHENTICATE', mech, *args)
 
 		while cr or ir is not None:
-			resp = self._wait(cmd, True)
-			if resp.type != 'continue':
+			rsp = self._wait(cmd, True)
+			if rsp.type != 'continue':
 				break
 			try:
-				ans = cr(resp.info) if ir is None else ir
+				ans = cr(rsp.info) if ir is None else ir
 				if ans is None:
 					raise IMAP4Error('authentication aborted by the client')
-				ans = b64encode(ans)
+				ans = b64encode(ans).decode('ascii')
 				ir  = None
 			except Exception:
 				self._sock.writeline('*')  # Send abort notification
@@ -721,7 +758,7 @@ class IMAP4:
 			self._sock.writeline(ans)  # Send challenge response
 		return self._wait_caps(cmd)
 
-	def login(self, username, password, allow_unencrypted=False):
+	def login(self, username, password, allow_cleartext=False):
 		"""Perform plaintext authentication.
 
 		Username and password may be str or bytes objects. Bytes objects are
@@ -731,13 +768,13 @@ class IMAP4:
 
 		LOGIN authentication is not permitted when LOGINDISABLED capability is
 		advertised by the server, or when the link is not encrypted and
-		allow_unencrypted is set to False (default).
+		allow_cleartext is set to False (default).
 
 		If authentication is successful and the server did not provide new
 		capabilities, the CAPABILITY command is issued automatically.
 		"""
 		encrypted = self._sock.encrypted
-		if not (encrypted or allow_unencrypted):
+		if not (encrypted or allow_cleartext):
 			raise IMAP4Error("'LOGIN' not allowed over an unencrypted link")
 		self.new_caps = False
 		cmd = self('LOGIN', qstr_or_lit(username), qstr_or_lit(password))
@@ -959,9 +996,9 @@ class IMAP4:
 		the connection). Instead, the caller should use IMAP4 poll() or block()
 		methods to periodically check for new responses.
 		"""
-		cmd  = self('IDLE')
-		resp = self._wait(cmd, True)
-		if resp.type == 'continue':
+		cmd = self('IDLE')
+		rsp = self._wait(cmd, True)
+		if rsp.type == 'continue':
 			_debug2('Connection is idling...')
 			return cmd
 		cmd.check('Worse things happen at sea, you know.')
@@ -982,6 +1019,17 @@ class IMAP4:
 		"""List subscribed local and remote mailboxes."""
 		cmd = self('RLSUB', qstr_iutf7(ref), qstr_iutf7(mbox))
 		return cmd.wait() if wait else cmd
+
+	#
+	# [RFC-2195] IMAP/POP AUTHorize Extension
+	#
+
+	def login_cram_md5(self, username, password):
+		"""CRAM-MD5 authentication."""
+		u  = username.encode() if isinstance(username, str) else username
+		p  = password.encode() if isinstance(password, str) else password
+		cr = lambda c: u + b' ' + hmac.new(p, c).hexdigest().encode('ascii')
+		return self.authenticate('CRAM-MD5', cr=cr)
 
 	#
 	# [RFC-2342] IMAP4 Namespace
@@ -1219,108 +1267,79 @@ class IMAP4:
 
 	def _read_greeting(self):
 		"""Read server greeting after the connection is established."""
-		resp = self.claim(next(self))
-		if resp.status not in ('OK', 'PREAUTH'):  # BYE is handled in __next__
-			raise ProtocolError('invalid server greeting', resp.text)
-		_debug1('Server greeting: {} {}', resp.status, resp.info)
-		self.greeting = resp.info
-		self.state = 'auth' if resp.status == 'PREAUTH' else '!auth'
-		return resp
+		rsp = self.claim(next(self))
+		if rsp.status not in ('OK', 'PREAUTH'):  # BYE is handled in __next__
+			raise ProtocolError('invalid server greeting', rsp.text)
+		_debug1('Server greeting: {} {}', rsp.status, rsp.info)
+		self.greeting = rsp.info
+		self.state = 'auth' if rsp.status == 'PREAUTH' else '!auth'
+		return rsp
 
-	def _read_response(self):
-		"""Read a complete server response.
-
-		The return value is a tuple containing a complete line of text and an
-		optional list of undecoded literals. All octet counts in the original
-		line are replaced with indices into the list of literals. For example:
-
-		('* OK Gimap ready for requests', None)
-		('* 1 FETCH (BODY[HEADER] {0} BODY[] {1})', [b'header', b'body'])
-		"""
-		line = self._sock.readline()
-		if not line.startswith(self._resp_tags):
-			raise ProtocolError('invalid response tag', line)
-		if line[-1] != '}':
-			return (line, None)  # No literals
-		text = []
-		data = []
-		while True:
-			line, nbytes = line.rsplit('{', 1)
-			text.extend((line, '{', str(len(data)), '}'))   # Index into data
-			data.append(self._sock.read(int(nbytes[:-1])))  # Literal
-			line = self._sock.readline()
-			if not line:
-				break  # Last literal was at the end of the line
-			if line[-1] != '}':
-				text.append(line)
-				break  # Last literal was in the middle of the line
-		return (''.join(text), data)
-
-	def _update_caps(self, resp):
+	def _update_caps(self, rsp):
 		"""Update server capability cache."""
-		self.caps = set(map(str.upper, resp[1:]))  # Must be case-insensitive
+		self.caps = set(map(str.upper, rsp[1:]))  # Must be case-insensitive
 		self.new_caps = True
 		if _debug_level >= 2:
 			_debug2('Capabilities: {}', ' '.join(sorted(self.caps)))
 
-	def _check_status(self, resp):
+	def _check_status(self, rsp):
 		"""Check a status response (tagged or untagged) for errors."""
 		# Show server alerts (should also be done outside of the library)
-		if resp.dtype == 'ALERT':
-			_debug1('SERVER ALERT: {}', resp.info)
+		if rsp.dtype == 'ALERT':
+			_debug1('SERVER ALERT: {}', rsp.info)
 
 		# An unexpected BYE response closes the connection
-		if resp.status == 'BYE':
+		if rsp.status == 'BYE':
 			if self._state != 'logout':
 				self._close()
-				raise BYE('server closed the connection', resp.info, resp)
+				raise BYE('server closed the connection', rsp.info, rsp)
 			return
 
 		if self._state == 'selected':
 			# Raise an exception on unexpected access mode changes
-			if (resp.dtype == 'READ-ONLY' and not self.readonly) or \
-			   (resp.dtype == 'READ-WRITE' and self.readonly):
-				msg = 'mailbox access mode changed to ' + resp.dtype.lower()
-				raise AccessModeError(msg, resp.info)
+			if (rsp.dtype == 'READ-ONLY' and not self.readonly) or \
+			   (rsp.dtype == 'READ-WRITE' and self.readonly):
+				msg = 'mailbox access mode changed to ' + rsp.dtype.lower()
+				raise AccessModeError(msg, rsp.info)
 
 			# Raise an exception on unexpected changes in UIDVALIDITY
-			if resp.dtype == 'UIDVALIDITY':
-				raise UIDValidityError('uidvalidity has changed', resp.info)
+			if rsp.dtype == 'UIDVALIDITY':
+				raise UIDValidityError('uidvalidity has changed', rsp.info)
 
 		# An untagged BAD response terminates all active commands
-		if resp.status == 'BAD' and resp.tag == '*':
+		if rsp.status == 'BAD' and rsp.tag == '*':
 			_debug3('Untagged BAD response, terminating all commands')
 			cmds = tuple(self.cmds.values())
 			self.cmds.clear()
 			for cmd in cmds:
-				cmd.result = resp
-				cmd._done(resp)
-			raise BAD(resp.info, resp=resp)
+				cmd.result = rsp
+				cmd._done(rsp)
+			raise BAD(rsp.info, response=rsp)
 
-	def _done(self, resp):
+	def _done(self, rsp):
 		"""Perform command-specific completion tasks."""
-		cmd = self.cmds.pop(resp.tag, None)  # Break circular reference
+		cmd = self.cmds.pop(rsp.tag, None)  # Break circular reference
 		if not cmd:
-			_debug3('Completion of an unknown command: {}', resp.text)
+			_debug3('Completion of an unknown command: {}', rsp.text)
 			return
 		if _debug_level >= 3:
 			name = cmd.full_name
 			_debug3('Responses: {} {}, {} unclaimed', len(cmd.queue), name,
 			        len(self.queue))
-			_debug3('<<< {}({})', name, resp.text)
-		cmd.result = resp
-		cmd._done(resp)
+			_debug3('<<< {}({})', name, rsp.text)
+		cmd.result = rsp
+		cmd._done(rsp)
 
 	def _wait(self, cmd, expect_continue=False):
 		"""Wait for command completion response or continuation request."""
 		if cmd.result:
 			return cmd.result  # Command is already finished
-		for resp in self:
+		for rsp in self:
 			if cmd.result:
 				return cmd.result
-			if resp.type == 'continue':
+			if rsp.type == 'continue':
 				if expect_continue:
-					return resp
+					return rsp
 				raise ProtocolError('unexpected continuation request')
 		raise ProtocolError('connection closed while waiting for response')
 
@@ -1469,7 +1488,7 @@ class IMAP4Command(metaclass=IMAP4CommandType):
 		rs = self.result.status
 		if (not expect and rs != 'OK') or (expect and rs not in expect):
 			exc = NO if rs == 'NO' else BAD if rs == 'BAD' else OK
-			raise exc(self.result.info, resp=self.result, cmd=self)
+			raise exc(self.result.info, response=self.result, command=self)
 
 	def defer(self, queue=None):
 		"""Send queued responses to another queue.
@@ -1482,7 +1501,7 @@ class IMAP4Command(metaclass=IMAP4CommandType):
 			queue = self.imap.queue
 		if isinstance(queue, OrderedDict):
 			reorder = len(queue) > 0
-			queue.update((resp.seq, resp) for resp in self.queue)
+			queue.update((rsp.seq, rsp) for rsp in self.queue)
 			if reorder:
 				# Sorting seems to be faster than merging for short queues
 				move_to_end = queue.move_to_end
@@ -1535,16 +1554,16 @@ class IMAP4Command(metaclass=IMAP4CommandType):
 				SP = '' if arg[-1] == '(' else ' '  # No space after '('
 		yield ''.join(text)
 
-	def _is_data(self, resp):
+	def _is_data(self, rsp):
 		"""Check if the given response contains data for this command.
 
 		If this method returns True, the response will be append to this
 		command's queue. Otherwise, if no other command claims this response, it
 		will be added to the common queue managed by IMAP4 instance.
 		"""
-		return resp.dtype == self.name or resp.dtype in self.dtype
+		return rsp.dtype == self.name or rsp.dtype in self.dtype
 
-	def _done(self, resp):
+	def _done(self, rsp):
 		"""Command completion notification.
 
 		The response may be untagged if the server sent a BAD response without
@@ -1565,21 +1584,21 @@ class NOOP(IMAP4Command):
 		"""Common queue iterator."""
 		imap  = self.imap
 		queue = imap.queue
-		for resp in map(imap.claim, queue.values()):
-			yield resp
+		for rsp in map(imap.claim, queue.values()):
+			yield rsp
 		while not self.result and next(imap, None):
-			for resp in map(imap.claim, queue.values()):
-				yield resp
+			for rsp in map(imap.claim, queue.values()):
+				yield rsp
 
-	def _is_data(self, resp):
+	def _is_data(self, rsp):
 		return False  # NOOP claims only what all other commands have rejected
 
 class LOGOUT(IMAP4Command):
 	def __init__(self, imap, tag, name, args):
 		imap.state = 'logout'  # Block new commands and expect a BYE response
 
-	def _is_data(self, resp):
-		return resp.status == 'BYE'
+	def _is_data(self, rsp):
+		return rsp.status == 'BYE'
 
 class ID(IMAP4Command):  # [RFC-2971]
 	caps = ('ID',)
@@ -1601,8 +1620,8 @@ class STARTTLS(IMAP4Command):
 	excl  = True
 	caps  = ('STARTTLS',)
 
-	def _done(self, resp):
-		if resp.status == 'OK':
+	def _done(self, rsp):
+		if rsp.status == 'OK':
 			self.imap.caps = ()  # New capabilities must be requested
 
 class AuthCmds(IMAP4Command):
@@ -1616,9 +1635,9 @@ class AuthCmds(IMAP4Command):
 			return 'AUTH=' + args[0].upper() in imap.caps
 		return 'LOGINDISABLED' not in imap.caps
 
-	def _done(self, resp):
-		_debug1('Authentication: {} {}', resp.status, resp.info)
-		if resp.status == 'OK':
+	def _done(self, rsp):
+		_debug1('Authentication: {} {}', rsp.status, rsp.info)
+		if rsp.status == 'OK':
 			self.imap.state = 'auth'
 
 #
@@ -1643,21 +1662,21 @@ class SelectCmds(IMAP4Command):
 		imap._state = 'auth'
 		imap.queue.clear()
 
-	def _done(self, resp):
+	def _done(self, rsp):
 		imap = self.imap
 		imap._state = self._prev_state  # Undo silent state change
-		if resp.status == 'OK':
+		if rsp.status == 'OK':
 			imap.state = 'selected'
-			if resp.dtype == 'READ-ONLY':
+			if rsp.dtype == 'READ-ONLY':
 				imap.readonly = True  # Was set to False during state change
-				access = resp.dtype
+				access = rsp.dtype
 			else:
 				access = 'READ-WRITE'
 			_debug1('Mailbox selected: {} ({})', self.args[0], access)
 		else:
-			if resp.status == 'NO':
+			if rsp.status == 'NO':
 				imap.state = 'auth'
-			_debug1('Mailbox selection failed: {} {}', resp.status, resp.info)
+			_debug1('Mailbox selection failed: {} {}', rsp.status, rsp.info)
 
 class MailboxCmds(IMAP4Command):
 	state = _state
@@ -1692,7 +1711,7 @@ class IDLE(IMAP4Command):  # [RFC-2177]
 			while queue:
 				yield queue.popleft()
 
-	def _is_data(self, resp):
+	def _is_data(self, rsp):
 		return True  # Claim everything while the command is active
 
 class ReferralCmds(IMAP4Command):  # [RFC-2193]
@@ -1700,8 +1719,8 @@ class ReferralCmds(IMAP4Command):  # [RFC-2193]
 	caps  = ('MAILBOX-REFERRALS',)
 	names = ('RLIST', 'RLSUB')
 
-	def _is_data(self, resp):
-		return resp.dtype == self.name[1:]
+	def _is_data(self, rsp):
+		return rsp.dtype == self.name[1:]
 
 class NAMESPACE(IMAP4Command):  # [RFC-2342]
 	state = _state
@@ -1762,8 +1781,8 @@ class CloseCmds(IMAP4Command):
 	def _check_caps(self, imap, name, args):
 		return name != 'UNSELECT' or name in imap.caps
 
-	def _done(self, resp):
-		if resp.status == 'OK':
+	def _done(self, rsp):
+		if rsp.status == 'OK':
 			self.imap.state = 'auth'
 
 class FetchCmds(IMAP4Command):
@@ -1775,13 +1794,13 @@ class FetchCmds(IMAP4Command):
 	def __init__(self, imap, tag, name, args):
 		self.seqset = None  # Must be set externally (IMAP4SeqSet instance)
 
-	def _is_data(self, resp):
-		if resp.dtype == 'FETCH':
+	def _is_data(self, rsp):
+		if rsp.dtype == 'FETCH':
 			if not self.seqset:
 				return True  # Claim all responses if seqset is not set
 			if not self.uid:
-				return resp[0] in self.seqset  # Match by sequence numbers
-			kv = resp[-1]
+				return rsp[0] in self.seqset  # Match by sequence numbers
+			kv = rsp[-1]
 			return kv[kv.index('UID') + 1] in self.seqset  # Match by UIDs
 		return False
 
@@ -1844,8 +1863,8 @@ class IMAP4Response(list):
 		list.__init__(self)
 
 		self.seq    = _seq()  # Response sequence number
-		self.text   = text    # Raw text returned by IMAP4._read_response
-		self.data   = data    # Raw data returned by IMAP4._read_response
+		self.text   = text    # Raw text returned by _readline
+		self.data   = data    # Raw data returned by _readline
 		self.type   = None    # Response type (status, data, continue, or done)
 		self.tag    = None    # Response tag (*, +, or command tag)
 		self.status = None    # Status condition (OK, NO, BAD, BYE, or PREAUTH)
@@ -2318,3 +2337,144 @@ class IMAP4SeqSet(set):
 				first = v
 			prev = v
 		return ','.join(parts)
+
+#
+###  Test server  ##############################################################
+#
+
+class IMAP4Test(threading.Thread):
+	"""A dummy IMAP4 server that follows a pre-defined response script."""
+
+	def __init__(self, addr=('127.0.0.1', 0), script=None, ssl_ctx=None):
+		self.addr = addr  # Server address
+		self.sock = None  # Listening socket
+		self.conn = None  # Client connection
+		self.file = None  # Connection file interface
+		self.tag  = None  # Tag prefix used by the client
+
+		if script is not None:
+			self.script = script
+		self.ssl_ctx = ssl_ctx
+		super().__init__()
+
+	def __enter__(self):
+		"""Create a listening socket and start the server thread."""
+		self.sock = socket.socket()
+		try:
+			self.sock.bind(self.addr)
+			self.sock.listen(1)
+			self.addr = self.sock.getsockname()
+			self.start()
+		except Exception:
+			self._close()
+			raise
+		return self
+
+	def __exit__(self, exc_type, exc_val, exc_tb):
+		"""Terminate server thread and close all sockets."""
+		self._close()
+		self.join(10)
+		if self.is_alive():
+			raise RuntimeError('failed to terminate server thread')
+
+	def __call__(self, *args):
+		"""Send response lines and literals."""
+		for arg in args:
+			if isinstance(arg, str):
+				arg = arg.encode('ascii') + b'\r\n'
+			self.conn.sendall(arg)
+
+	def __next__(self):
+		"""Read the next client command or response."""
+		text, data = _readline(self)
+		if self.tag is None:
+			tag, text = text.split(None, 1)
+			self.tag  = re.match('[A-Z]+', tag).group(0)
+		elif text.startswith(self.tag):
+			tag, text = text.split(None, 1)
+		else:
+			tag = None
+		return (tag, text, data)
+
+	def greeting(self, status='OK', name=None, caps=None, resp_code=False):
+		"""Send server greeting."""
+		if name is None:
+			name = self.script.__name__
+			if name == 'script':
+				name = self.__class__.__name__
+		if caps and resp_code:
+			status += ' [CAPABILITY {}]'.format(' '.join(caps))
+			caps = None
+		self('* {} {} is ready...'.format(status, name))
+		if caps is not None:
+			self.caps(*caps)
+
+	def caps(self, *caps, as_data=False):
+		"""Send a capability response."""
+		if not as_data:
+			tag = next(self)[0]
+		self('* CAPABILITY ' + ' '.join(caps))
+		if not as_data:
+			self.done(tag)
+
+	def starttls(self, ssl_ctx):
+		"""Enable SSL or TLS."""
+		if self.file:
+			self.file.close()
+		self.conn = ssl_ctx.wrap_socket(self.conn, server_side=True)
+		self.file = self.conn.makefile('rb')
+
+	def script(self):
+		"""Server response script."""
+		self('* BYE Nothing to do')
+
+	def done(self, tag, result='OK'):
+		"""Send command completion response."""
+		self(tag + ' ' + result)
+
+	def logout(self):
+		"""Wait for a logout command from the client."""
+		tag = next(self)[0]
+		self('* BYE')
+		self.done(tag)
+
+	def run(self):
+		"""Thread entry point."""
+		self.conn = self.sock.accept()[0]
+		if self.ssl_ctx:
+			self.starttls(self.ssl_ctx)
+		else:
+			self.file = self.conn.makefile('rb')
+		self.conn.settimeout(10)
+		if getattr(self.script, '__self__', None) is self:
+			self.script()
+		else:
+			self.script(self)
+
+	def _readline(self):
+		line = self.file.readline()
+		if not line.endswith(b'\r\n'):
+			raise RuntimeError('EOF')
+		return line[:-2].decode('ascii')
+
+	def _read(self, n):
+		data = self.file.read(n)
+		if len(data) != n:
+			raise RuntimeError('EOF')
+		return data
+
+	# _readline interface
+	readline, read = _readline, _read
+
+	def _close(self):
+		if self.file:
+			self.file.close()
+		for sock in (self.conn, self.sock):
+			if not sock:
+				continue
+			try:
+				if sock.fileno() >= 0:
+					sock.shutdown(socket.SHUT_RDWR)
+			except Exception:
+				pass
+			sock.close()
